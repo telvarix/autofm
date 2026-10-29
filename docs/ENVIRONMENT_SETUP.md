@@ -77,7 +77,8 @@ cluster is the authoritative pinned list.
 | PyTorch Geometric | matching `torch` | Pure-Python core; in the shared env. |
 | numpy, pandas, scipy | per `requirements.lock` | Core compute. |
 | scikit-learn | per `requirements.lock` | Baselines + metrics. |
-| xgboost | per `requirements.lock` | **CPU only on Leonardo** ([§9](#9-leonardo-gotchas-read-before-your-first-job)). |
+| xgboost-cpu | per `requirements.lock` | **CPU-only build** ([§9](#9-leonardo-gotchas-read-before-your-first-job)). |
+| pyarrow | per `requirements.lock` | Reads the Parquet copy of the dataset. |
 | mapie | per `requirements.lock` | Conformal prediction. |
 | pyyaml | per `requirements.lock` | Config loading. |
 | matplotlib, networkx | per `requirements.lock` | Plots + graphs. |
@@ -337,7 +338,10 @@ first-time failures.
   `nvidia-smi` and `torch.version.cuda` report in the shared env; do not
   hard-code a number in your scripts.
   - `torch.compile` may be unavailable -> **use eager mode.**
-  - **XGBoost on GPU may be unavailable -> use CPU XGBoost.**
+  - **XGBoost on GPU may be unavailable -> use CPU XGBoost.** Install it as
+    `xgboost-cpu`: the plain `xgboost` wheel pulls `nvidia-nccl-cu13`, which
+    overwrites the CUDA 12 `libnccl` that torch uses, and multi-GPU runs then
+    fail with "CUDA driver version is insufficient".
 - **`torch.jit.script` may be unsupported on the shared env's Python.** Ignore
   the warning, or use `torch.compile` where appropriate.
 - **`$FAST` is full.** Put data and outputs in `<PROJECT_PATH>` (permanent) or

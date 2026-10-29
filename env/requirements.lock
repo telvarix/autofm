@@ -1,21 +1,288 @@
 # autofm - fully-resolved, exact dependency pins (REPRODUCIBLE INSTALL).
 #
-# *** PLACEHOLDER - not yet populated. ***
+# Resolved by uv for the shared Leonardo env (Python 3.14, torch cu126):
 #
-# To fill this in, on a Leonardo LOGIN node regenerate from env/requirements.in
-# via the shared env (canonical):
+#     uv pip compile env/requirements.in --torch-backend cu126 -o env/requirements.lock
 #
-#     bash <SHARED_ENV_PATH>/setup_env.sh      # resolves + writes requirements.lock
-#
-# Or, as a manual fallback, freeze the already-activated shared env:
-#
-#     source <SHARED_ENV_PATH>/activate.sh
-#     pip freeze > env/requirements.lock
-#
-# Then commit the result. Do NOT hand-edit the pins.
-#
-# Until populated, the repo-root requirements.txt installs the direct deps
-# (env/requirements.in), so this works today:
-#
-#     pip install -r requirements.txt
-#
+# Do NOT hand-edit the pins: edit env/requirements.in and regenerate.
+absl-py==2.5.1
+    # via
+    #   tensorboard
+aiohappyeyeballs==2.7.1
+    # via
+    #   aiohttp
+aiohttp==3.14.5
+    # via
+    #   torch-geometric
+aiosignal==1.4.0
+    # via
+    #   aiohttp
+alembic==1.20.0
+    # via
+    #   optuna
+attrs==26.1.0
+    # via
+    #   aiohttp
+certifi==2026.7.22
+    # via
+    #   requests
+charset-normalizer==3.5.2
+    # via
+    #   requests
+cloudpickle==3.1.2
+    # via
+    #   joblib
+colorlog==6.12.0
+    # via
+    #   optuna
+contourpy==1.4.0
+    # via
+    #   matplotlib
+cuda-bindings==12.9.9
+    # via
+    #   torch
+cuda-pathfinder==1.8.3
+    # via
+    #   cuda-bindings
+cuda-toolkit==12.6.3
+    # via
+    #   torch
+cycler==0.12.1
+    # via
+    #   matplotlib
+filelock==4.1.1
+    # via
+    #   torch
+fonttools==4.66.1
+    # via
+    #   matplotlib
+frozenlist==1.8.0
+    # via
+    #   aiohttp
+    #   aiosignal
+fsspec==2026.9.0
+    # via
+    #   torch
+    #   torch-geometric
+grpcio==1.84.0
+    # via
+    #   tensorboard
+idna==3.20
+    # via
+    #   requests
+    #   yarl
+jinja2==3.1.6
+    # via
+    #   torch
+    #   torch-geometric
+joblib==1.6.0
+    # via
+    #   scikit-learn
+kiwisolver==1.5.1
+    # via
+    #   matplotlib
+mako==1.4.3
+    # via
+    #   alembic
+mapie==1.5.0
+    # via
+    #   -r requirements.in
+markdown==3.11
+    # via
+    #   tensorboard
+markupsafe==3.0.4
+    # via
+    #   jinja2
+    #   mako
+    #   werkzeug
+matplotlib==3.11.2
+    # via
+    #   -r requirements.in
+mpmath==1.3.0
+    # via
+    #   sympy
+multidict==7.1.0
+    # via
+    #   aiohttp
+    #   yarl
+narwhals==2.27.1
+    # via
+    #   scikit-learn
+networkx==3.7
+    # via
+    #   -r requirements.in
+    #   torch
+numpy==2.5.4
+    # via
+    #   -r requirements.in
+    #   contourpy
+    #   mapie
+    #   matplotlib
+    #   optuna
+    #   pandas
+    #   scikit-learn
+    #   scipy
+    #   tensorboard
+    #   torch-geometric
+    #   xgboost-cpu
+nvidia-cublas-cu12==12.6.4.1
+    # via
+    #   cuda-toolkit
+    #   nvidia-cudnn-cu12
+    #   nvidia-cusolver-cu12
+nvidia-cuda-cupti-cu12==12.6.80
+    # via
+    #   cuda-toolkit
+nvidia-cuda-nvrtc-cu12==12.6.85
+    # via
+    #   cuda-toolkit
+nvidia-cuda-runtime-cu12==12.6.77
+    # via
+    #   cuda-toolkit
+nvidia-cudnn-cu12==9.10.2.21
+    # via
+    #   torch
+nvidia-cufft-cu12==11.3.0.4
+    # via
+    #   cuda-toolkit
+nvidia-cufile-cu12==1.11.1.6
+    # via
+    #   cuda-toolkit
+nvidia-curand-cu12==10.3.7.77
+    # via
+    #   cuda-toolkit
+nvidia-cusolver-cu12==11.7.1.2
+    # via
+    #   cuda-toolkit
+nvidia-cusparse-cu12==12.5.4.2
+    # via
+    #   cuda-toolkit
+    #   nvidia-cusolver-cu12
+nvidia-cusparselt-cu12==0.7.1
+    # via
+    #   torch
+nvidia-nccl-cu12==2.29.3
+    # via
+    #   torch
+nvidia-nvjitlink-cu12==12.9.86
+    # via
+    #   nvidia-cufft-cu12
+    #   nvidia-cusolver-cu12
+    #   nvidia-cusparse-cu12
+    #   torch
+nvidia-nvshmem-cu12==3.4.5
+    # via
+    #   torch
+nvidia-nvtx-cu12==12.6.77
+    # via
+    #   cuda-toolkit
+optuna==5.0.0
+    # via
+    #   -r requirements.in
+packaging==26.3
+    # via
+    #   matplotlib
+    #   optuna
+    #   tensorboard
+pandas==3.0.6
+    # via
+    #   -r requirements.in
+pillow==12.3.0
+    # via
+    #   matplotlib
+    #   tensorboard
+propcache==0.5.4
+    # via
+    #   aiohttp
+    #   yarl
+protobuf==7.36.2
+    # via
+    #   tensorboard
+psutil==7.2.2
+    # via
+    #   torch-geometric
+pyarrow==26.0.0
+    # via -r requirements.in
+pyparsing==3.3.3
+    # via
+    #   matplotlib
+    #   torch-geometric
+python-dateutil==2.9.0.post0
+    # via
+    #   matplotlib
+    #   pandas
+pyyaml==6.0.3
+    # via
+    #   -r requirements.in
+    #   optuna
+requests==2.34.2
+    # via
+    #   torch-geometric
+scikit-learn==1.9.1
+    # via
+    #   -r requirements.in
+    #   mapie
+scipy==1.18.1
+    # via
+    #   -r requirements.in
+    #   mapie
+    #   scikit-learn
+    #   xgboost-cpu
+setuptools==84.0.0
+    # via
+    #   tensorboard
+    #   torch
+six==1.17.0
+    # via
+    #   python-dateutil
+sqlalchemy==2.1.4
+    # via
+    #   alembic
+    #   optuna
+sympy==1.14.0
+    # via
+    #   torch
+tensorboard==2.21.0
+    # via
+    #   -r requirements.in
+tensorboard-data-server==0.7.2
+    # via
+    #   tensorboard
+threadpoolctl==3.7.0
+    # via
+    #   scikit-learn
+torch==2.14.1+cu126
+    # via
+    #   -r requirements.in
+torch-geometric==2.8.1
+    # via
+    #   -r requirements.in
+tqdm==4.70.1
+    # via
+    #   -r requirements.in
+    #   optuna
+    #   torch-geometric
+triton==3.8.0
+    # via
+    #   torch
+typing-extensions==4.16.0
+    # via
+    #   alembic
+    #   grpcio
+    #   sqlalchemy
+    #   torch
+urllib3==2.8.0
+    # via
+    #   requests
+werkzeug==3.1.9
+    # via
+    #   tensorboard
+xgboost-cpu==3.4.1
+    # via
+    #   -r requirements.in
+xxhash==4.0.1
+    # via
+    #   torch-geometric
+yarl==1.25.1
+    # via
+    #   aiohttp

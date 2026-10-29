@@ -15,11 +15,13 @@ torch                    # exact version pinned in requirements.lock (shared env
 torch_geometric
 numpy
 pandas
+pyarrow                  # Parquet dataset (autofm.data.to_parquet, loader)
 scipy
 
 # ---- ML / modelling -------------------------------------------------------
 scikit-learn
-xgboost                  # CPU only on Leonardo (CUDA driver too old; see §5)
+xgboost-cpu              # CPU-only wheel: plain xgboost pulls nvidia-nccl-cu13, which overwrites
+                         # torch's CUDA 12 libnccl and breaks multi-GPU on the old driver (see §5)
 
 # ---- Uncertainty / calibration ---------------------------------------------
 mapie                    # conformal prediction wrappers
