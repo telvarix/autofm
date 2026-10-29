@@ -38,8 +38,8 @@ from torch.utils.data import DataLoader, TensorDataset
 from torch.utils.data.distributed import DistributedSampler
 
 from autofm import pipeline as pl
-from autofm.data.features import prepare
-from autofm.data.labels import CLASS_NAMES, label_frame, load_alarms
+from autofm.data.features import WindowRows, prepare, prepare_rows
+from autofm.data.labels import CLASS_NAMES, label_from_config
 from autofm.data.loader import load
 from autofm.metrics import compute_all, format_summary, write_prometheus
 from autofm.model.classifier import TemporalClassifier, _TemporalEncoder
@@ -52,6 +52,7 @@ from autofm.train_mae import (
     _dist_info,
     _setup,
     _write_bench,
+    fit_mae_rows,
 )
 from sklearn.metrics import classification_report
 
@@ -85,7 +86,7 @@ def _make_loader(dataset, cfg, rank, world_size, is_distributed, pin):
 def _train_mae_ddp(cfg, prep, device, ctx, bench_out, log) -> _MAENet:
     """DDP-train the MAE on the train split; return the trained core _MAENet."""
     rank, local_rank, world_size, is_distributed, is_cuda = ctx
-    flat = _flatten_time(prep.train.X).astype(np.float32)
+    flat = _flatten_time(prep.train.X).astype(np.float32, copy=False)
     core = _MAENet(flat.shape[1], cfg["latent_dim"]).to(device)
     net = _ddp_wrap(core, is_distributed, local_rank, is_cuda)
     opt = torch.optim.Adam(net.parameters(), lr=cfg.get("mae_lr", 1e-3))
@@ -173,16 +174,19 @@ def _train_clf_ddp(cfg, Ztr, ytr, device, ctx, log) -> _TemporalEncoder:
     net = _ddp_wrap(core, is_distributed, local_rank, is_cuda)
     opt = torch.optim.Adam(net.parameters(), lr=1e-3)
 
-    # Inverse-frequency class weights (same as TemporalClassifier).
+    # Inverse-frequency class weights (same as TemporalClassifier), raised to
+    # class_weight_power: 1 = full inverse frequency (default), 0.5 = square
+    # root (gentler), 0 = unweighted.
     counts = np.bincount(ytr, minlength=n_classes).astype(np.float64)
     counts[counts == 0] = 1.0
-    cw = torch.tensor(counts.sum() / (n_classes * counts),
+    power = float(cfg.get("class_weight_power", 1.0))
+    cw = torch.tensor((counts.sum() / (n_classes * counts)) ** power,
                       dtype=torch.float32, device=device)
     ce = nn.CrossEntropyLoss(weight=cw)
 
     pin = is_cuda
     sampler, loader = _make_loader(
-        TensorDataset(torch.from_numpy(Ztr.astype(np.float32)),
+        TensorDataset(torch.from_numpy(Ztr.astype(np.float32, copy=False)),
                       torch.from_numpy(ytr.astype(np.int64))),
         cfg, rank, world_size, is_distributed, pin)
 
@@ -213,21 +217,44 @@ def _train_clf_ddp(cfg, Ztr, ytr, device, ctx, log) -> _TemporalEncoder:
     return net.module if is_distributed else net
 
 
+def _with_diff(Z: np.ndarray) -> np.ndarray:
+    """Append the step-to-step change of every input, ``(N, k, L) -> (N, k, 2L)``
+    (zero change at the first step of each window)."""
+    d = np.zeros_like(Z)
+    np.subtract(Z[:, 1:], Z[:, :-1], out=d[:, 1:])
+    return np.concatenate([Z, d], axis=2)
+
+
+def _compress_rows(comp, w: WindowRows) -> np.ndarray:
+    """Latent windows ``(N, k, L)`` for one split, without materialising the
+    ``(N, k, F)`` input windows.
+
+    Both compressors map each ROP row on its own, so encoding every distinct
+    row once and gathering by window gives the same latents as
+    ``comp.transform(w.windows())`` at a fraction of the memory and compute.
+    """
+    z_rows = comp.transform(w.rows[:, None, :])[:, 0, :]
+    return z_rows[w.row_index()]
+
+
 # --------------------------------------------------------------------------- #
 # Rank-0 once-only tail: compress transforms, GAT, eval, conformal, advisory
 # --------------------------------------------------------------------------- #
-def _finish_rank0(cfg, prep, comp, clf_core, t0, log, gat=None) -> dict:
+def _finish_rank0(cfg, prep, comp, clf_core, t0, log, gat=None, Z=None) -> dict:
     """Run the deterministic tail on rank 0 and print/return results.
 
     ``comp`` is the already-fitted compressor (MAE wrapper or PCA); ``clf_core``
     is the DDP-trained classifier encoder. ``gat`` is the SAME (seed-fixed)
     GATFusion instance used to enrich the train split during training, reused
     here so eval sees an identical transform (no second random init).
+    ``Z`` optionally carries the already-compressed ``(train, val, test)``
+    latents (low-memory mode), so the splits are not compressed again.
     """
     # Compress all splits with the already-trained compressor.
-    Ztr = comp.transform(prep.train.X)
-    Zval = comp.transform(prep.val.X)
-    Zte = comp.transform(prep.test.X)
+    if Z is None:
+        Z = (comp.transform(prep.train.X), comp.transform(prep.val.X),
+             comp.transform(prep.test.X))
+    Ztr, Zval, Zte = Z
 
     # Optional GAT fusion - reuse the SAME instance that enriched the train
     # split during training (seed-fixed, untrained weights), so train and eval
@@ -342,7 +369,10 @@ def train_full(cfg: dict, bench_out: str | None = None) -> dict | None:
     rank, local_rank, world_size, is_distributed = _dist_info()
 
     # Single-process path == pipeline.run, guaranteeing identical laptop output.
-    if not is_distributed:
+    # Low-memory mode takes the path below even for one process: pipeline.run
+    # materialises every window.
+    low_mem = bool(cfg.get("low_mem", False))
+    if not is_distributed and not low_mem:
         if bench_out:
             # Still support --bench-out single-process by timing the MAE below;
             # but for identical-output guarantee we run the standard pipeline.
@@ -369,24 +399,35 @@ def train_full(cfg: dict, bench_out: str | None = None) -> dict | None:
     log(f"[data] loading telemetry (max_days={cfg['max_days']}, "
         f"max_gnbs={cfg['max_gnbs']}) ...")
     d = load(cfg["dataset_root"], max_days=cfg["max_days"], max_gnbs=cfg["max_gnbs"])
-    labeled = label_frame(
-        d.frame,
-        load_alarms(str(Path(cfg["dataset_root"]) / "alarms" / "alarms.csv")),
-        horizon=cfg["horizon"])
-    prep = prepare(labeled, d.feature_cols, k=cfg["window_k"])
+    labeled = label_from_config(d.frame, cfg)
+    log(f"[labels] mode={cfg.get('label_mode', 'forecast')} "
+        f"scopes={cfg.get('alarm_scopes') or 'all'} "
+        f"positive rate {labeled['will_fault'].mean():.4f}")
+    # Low-memory mode keeps each split as per-ROP rows plus window offsets
+    # instead of k overlapping copies of every row (about k times smaller).
+    prep = (prepare_rows if low_mem else prepare)(labeled, d.feature_cols,
+                                                  k=cfg["window_k"])
     # Authoritative cell -> gNB topology map (loader fdn parse) for the GAT.
     cell_to_gnb = (
         d.frame[["cell", "gnb"]].dropna().astype(str)
         .drop_duplicates("cell").set_index("cell")["gnb"].to_dict())
-    log(f"[data] train {prep.train.X.shape}  val {prep.val.X.shape}  "
-        f"test {prep.test.X.shape}")
+    del d, labeled
+    if low_mem:
+        log(f"[data] low-mem: train {len(prep.train.starts)} windows "
+            f"({len(prep.train.rows)} rows)  val {len(prep.val.starts)}  "
+            f"test {len(prep.test.starts)}  k={cfg['window_k']}")
+    else:
+        log(f"[data] train {prep.train.X.shape}  val {prep.val.X.shape}  "
+            f"test {prep.test.X.shape}")
 
     # Stage 1: compressor. MAE trains under DDP; PCA (sklearn, non-neural) is
     # fit replicated on each rank - cheap and deterministic.
     compressor_kind = cfg.get("compressor", "mae")
     if compressor_kind == "mae":
         log(f"[1/2] MAE ({cfg['mae_epochs']} epochs, DDP x{world_size}) ...")
-        mae_core = _train_mae_ddp(cfg, prep, device, ctx, bench_out, log)
+        mae_core = (fit_mae_rows(cfg, prep.train, device, ctx, log, bench_out)
+                    if low_mem else
+                    _train_mae_ddp(cfg, prep, device, ctx, bench_out, log))
         comp = MAECompressor(latent_dim=cfg["latent_dim"], seed=cfg["seed"])
         comp._net = mae_core
     else:
@@ -394,11 +435,28 @@ def train_full(cfg: dict, bench_out: str | None = None) -> dict | None:
         from autofm.model.compress import build_compressor
         comp = build_compressor("pca", latent_dim=cfg["latent_dim"],
                                 seed=cfg["seed"])
-        comp.fit(prep.train.X)
+        comp.fit(prep.train.windows() if low_mem else prep.train.X)
         mae_core = None  # no neural MAE core in the PCA path
 
     # Compress the TRAIN split (replicated) to feed the classifier.
-    Ztr = comp.transform(prep.train.X)
+    Z = None
+    if low_mem:
+        Ztr = _compress_rows(comp, prep.train)
+        if is_main:  # only rank 0 evaluates
+            Z = (Ztr, _compress_rows(comp, prep.val), _compress_rows(comp, prep.test))
+        log(f"[compress] latents train {Ztr.shape} "
+            f"({Ztr.nbytes / 2**30:.1f} GiB)")
+    else:
+        Ztr = comp.transform(prep.train.X)
+    if cfg.get("add_diff"):
+        if not low_mem:
+            raise ValueError("add_diff needs --low-mem")
+        Ztr = _with_diff(Ztr)
+        if Z is not None:
+            Z = (Ztr, _with_diff(Z[1]), _with_diff(Z[2]))
+        cfg["latent_dim"] = Ztr.shape[2]
+        log(f"[compress] + step-to-step change: inputs {Ztr.shape} "
+            f"({Ztr.nbytes / 2**30:.1f} GiB)")
 
     # Optional GAT enrich of the train latents before classifier training.
     # ONE seed-fixed instance, reused for eval in _finish_rank0 (identical
@@ -419,7 +477,7 @@ def train_full(cfg: dict, bench_out: str | None = None) -> dict | None:
 
     result = None
     if is_main:
-        result = _finish_rank0(cfg, prep, comp, clf_core, t0, log, gat=gat)
+        result = _finish_rank0(cfg, prep, comp, clf_core, t0, log, gat=gat, Z=Z)
         log(f"Total wall time: {time.perf_counter() - t0:.1f}s on {device}")
 
     _cleanup(is_distributed)
@@ -441,6 +499,28 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--metrics-out", default=None)
     ap.add_argument("--bench-out", default=None,
                     help="Record MAE throughput JSON (rank 0) for scaling study.")
+    ap.add_argument("--low-mem", action="store_true",
+                    help="Keep splits as per-ROP rows and compress each row once "
+                         "(needed for long histories; also with one GPU).")
+    ap.add_argument("--gpu-data", action="store_true",
+                    help="Low-mem MAE: keep train rows on the GPU (no DataLoader).")
+    ap.add_argument("--mae-batch-size", type=int, default=None,
+                    help="Low-mem MAE batch (the classifier keeps batch_size).")
+    ap.add_argument("--mae-lr", type=float, default=None)
+    ap.add_argument("--label-mode", choices=["forecast", "active"], default=None,
+                    help="forecast: an alarm starts within the horizon (default); "
+                         "active: an alarm is active now (detection).")
+    ap.add_argument("--alarm-scopes", default=None,
+                    help="Comma-separated subset of cell,gnb,region: only these "
+                         "alarms make labels (default: all).")
+    ap.add_argument("--clf-epochs", type=int, default=None)
+    ap.add_argument("--class-weight-power", type=float, default=None,
+                    help="Classifier class weights = inverse frequency ** power "
+                         "(1 default, 0.5 gentler, 0 unweighted).")
+    ap.add_argument("--mae-epochs", type=int, default=None)
+    ap.add_argument("--add-diff", action="store_true",
+                    help="Low-mem: also feed each input's change since the "
+                         "previous ROP.")
     args = ap.parse_args(argv)
 
     cfg = load_config(args.config)
@@ -462,6 +542,26 @@ def main(argv: list[str] | None = None) -> int:
         cfg["advisory"] = True
     if args.metrics_out is not None:
         cfg["metrics_out"] = args.metrics_out
+    if args.low_mem:
+        cfg["low_mem"] = True
+    if args.gpu_data:
+        cfg["gpu_data"] = True
+    if args.mae_batch_size is not None:
+        cfg["mae_batch_size"] = args.mae_batch_size
+    if args.mae_lr is not None:
+        cfg["mae_lr"] = args.mae_lr
+    if args.label_mode is not None:
+        cfg["label_mode"] = args.label_mode
+    if args.alarm_scopes is not None:
+        cfg["alarm_scopes"] = [s.strip() for s in args.alarm_scopes.split(",") if s.strip()]
+    if args.clf_epochs is not None:
+        cfg["clf_epochs"] = args.clf_epochs
+    if args.class_weight_power is not None:
+        cfg["class_weight_power"] = args.class_weight_power
+    if args.add_diff:
+        cfg["add_diff"] = True
+    if args.mae_epochs is not None:
+        cfg["mae_epochs"] = args.mae_epochs
 
     train_full(cfg, bench_out=args.bench_out)
     return 0

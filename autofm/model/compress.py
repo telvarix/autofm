@@ -127,7 +127,9 @@ class MAECompressor:
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
 
-        flat = _flatten_time(X_train).astype(np.float32)
+        # copy=False: the windows are already float32, and a second copy of
+        # every row is what runs a long history out of memory.
+        flat = _flatten_time(X_train).astype(np.float32, copy=False)
         self._net = _MAENet(flat.shape[1], self.latent_dim).to(self.device)
         opt = torch.optim.Adam(self._net.parameters(), lr=self.lr)
         loss_fn = nn.MSELoss()
@@ -189,9 +191,15 @@ class MAECompressor:
         assert self._net is not None, "fit() first"
         self._net.eval()
         n, k, _ = X.shape
-        flat = torch.from_numpy(_flatten_time(X).astype(np.float32)).to(self.device)
-        z = self._net.encoder(flat).cpu().numpy()
-        return _unflatten_time(z.astype(np.float32), n, k)
+        flat = _flatten_time(X).astype(np.float32, copy=False)
+        # Encode in chunks: moving every row to the GPU at once does not fit
+        # for long histories.
+        z = np.empty((len(flat), self.latent_dim), dtype=np.float32)
+        step = 262_144
+        for i in range(0, len(flat), step):
+            xb = torch.from_numpy(flat[i:i + step]).to(self.device)
+            z[i:i + step] = self._net.encoder(xb).float().cpu().numpy()
+        return _unflatten_time(z, n, k)
 
 
 def build_compressor(kind: str, latent_dim: int = 32, **kw):

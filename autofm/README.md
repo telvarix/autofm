@@ -32,6 +32,20 @@ Run `python -m autofm.profile_dataset --root <path>` to regenerate
 [`../docs/DATA_NOTES.md`](../docs/DATA_NOTES.md), the auto-profiled summary of
 levels, groups, cadence, entities, and the alarm taxonomy.
 
+### Faster loading: convert to Parquet once
+
+Parsing the CSVs dominates every run. Convert the groups the loader reads to
+typed Parquet (needs `pyarrow`), then point `dataset_root` at the output; the
+loader prefers Parquet and falls back to CSV:
+
+```bash
+python -m autofm.data.to_parquet --src <csv dataset> --dst <parquet dataset> --workers 8
+```
+
+Same frame as from the CSVs; on 14 days x 20 gNBs loading drops from 145 s to
+12 s, and the four groups for all 182 days take 3.2 GB instead of about 53 GB.
+Memory use is unchanged: the loader still holds every loaded day in RAM.
+
 ## How labeling works
 
 Telemetry carries no inline label. Each alarm is an interval

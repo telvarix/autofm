@@ -91,8 +91,40 @@ def _day_dirs(root: Path, level: str) -> list[Path]:
     return sorted(out, key=lambda p: p.name)
 
 
+def _map_unique(s: pd.Series, fn) -> pd.Series:
+    """``s.map(fn)``, but calling ``fn`` once per distinct value.
+
+    Every fdn repeats once per ROP (96 times a day), so parsing only the
+    distinct strings gives the same result for a fraction of the regex work.
+    """
+    return s.map({v: fn(v) for v in s.dropna().unique()})
+
+
+def _gnbs_of_days(days: list[Path]) -> set[str]:
+    """All gNBs that appear in the NRCellDU files of ``days`` (reads only fdn)."""
+    gnbs: set[str] = set()
+    for day in days:
+        pq = list(day.glob("NRCellDU_pm_*.parquet"))
+        if pq:
+            fdn = pd.read_parquet(pq[0], columns=["fdn"])["fdn"]
+        else:
+            csv = list(day.glob("NRCellDU_pm_*.csv"))
+            if not csv:
+                continue
+            fdn = pd.read_csv(csv[0], sep=";", dtype=str, usecols=["fdn"])["fdn"]
+        gnbs.update(g for g in map(_gnb_of_cell, fdn.dropna().unique()) if g)
+    return gnbs
+
+
 def _read_group(day_dir: Path, group: str, level: str) -> pd.DataFrame | None:
-    """Read one <group>_<level>_<date>.csv if present, numeric-coerced."""
+    """Read one <group>_<level>_<date> file if present, numeric-coerced.
+
+    Prefers the Parquet copy written by ``autofm.data.to_parquet`` (already
+    typed, so no parsing or coercion) and falls back to the CSV.
+    """
+    matches = list(day_dir.glob(f"{group}_{level}_*.parquet"))
+    if matches:
+        return pd.read_parquet(matches[0])
     matches = list(day_dir.glob(f"{group}_{level}_*.csv"))
     if not matches:
         return None
@@ -132,6 +164,12 @@ def load(
     if not cell_days:
         raise FileNotFoundError(f"No pm/ day directories under {root}")
 
+    # Pick the first N gNBs (stable, sorted) up front, so rows of other gNBs
+    # are dropped per day instead of after loading everything.
+    keep: set[str] | None = None
+    if max_gnbs is not None:
+        keep = set(sorted(_gnbs_of_days(cell_days))[:max_gnbs])
+
     cell_frames: list[pd.DataFrame] = []
     infra_frames: list[pd.DataFrame] = []
     plat_frames: list[pd.DataFrame] = []
@@ -150,10 +188,12 @@ def load(
             continue
 
         du = du.copy()
-        du["gnb"] = du["fdn"].map(_gnb_of_cell)
-        du["cell"] = du["fdn"].map(_cell_of_cell)
-        du["me"] = du["fdn"].map(_me_of_cell)
-        du["region"] = du["fdn"].map(_region_of)
+        du["gnb"] = _map_unique(du["fdn"], _gnb_of_cell)
+        if keep is not None:
+            du = du[du["gnb"].isin(keep)].copy()
+        du["cell"] = _map_unique(du["fdn"], _cell_of_cell)
+        du["me"] = _map_unique(du["fdn"], _me_of_cell)
+        du["region"] = _map_unique(du["fdn"], _region_of)
         du_feats = _numeric_feature_cols(du)
         du = du.rename(columns={c: f"du_{c}" for c in du_feats})
 
@@ -163,8 +203,10 @@ def load(
         # Join the CU view of the same cell (same gnb + cell id).
         if cu is not None:
             cu = cu.copy()
-            cu["gnb"] = cu["fdn"].map(_gnb_of_cell)
-            cu["cell"] = cu["fdn"].map(_cell_of_cell)
+            cu["gnb"] = _map_unique(cu["fdn"], _gnb_of_cell)
+            if keep is not None:
+                cu = cu[cu["gnb"].isin(keep)].copy()
+            cu["cell"] = _map_unique(cu["fdn"], _cell_of_cell)
             cu_feats = _numeric_feature_cols(cu)
             cu = cu.rename(columns={c: f"cu_{c}" for c in cu_feats})
             merged = merged.merge(
@@ -177,7 +219,9 @@ def load(
             plat = _read_group(plat_day, "ManagedNFService", "platform")
             if plat is not None:
                 plat = plat.copy()
-                plat["gnb"] = plat["fdn"].map(_gnb_of_container)
+                plat["gnb"] = _map_unique(plat["fdn"], _gnb_of_container)
+                if keep is not None:
+                    plat = plat[plat["gnb"].isin(keep)]
                 pf = _numeric_feature_cols(plat)
                 # Aggregate the gNB's NF services to one row per (gnb, ts).
                 agg = (plat.groupby(["gnb", TS])[pf].mean()
@@ -189,7 +233,7 @@ def load(
             infra = _read_group(infra_day, "OCloudNode", "infra")
             if infra is not None:
                 infra = infra.copy()
-                infra["region"] = infra["fdn"].map(_region_of)
+                infra["region"] = _map_unique(infra["fdn"], _region_of)
                 inf = _numeric_feature_cols(infra)
                 # Host names are a regional pool, not per-gNB, so aggregate the
                 # region's hosts to one host-context vector per (region, ts).
@@ -200,10 +244,6 @@ def load(
 
     frame = pd.concat(cell_frames, ignore_index=True)
 
-    # Restrict to the first N gNBs (stable, sorted) for smoke-scale runs.
-    if max_gnbs is not None:
-        keep = sorted(frame["gnb"].dropna().unique())[:max_gnbs]
-        frame = frame[frame["gnb"].isin(keep)].copy()
 
     # Attach platform (by gnb+ts) and infra (by region+ts - hosts are a
     # regional O-Cloud pool, not per-gNB, so the region is the reliable join).

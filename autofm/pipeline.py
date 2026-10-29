@@ -31,7 +31,7 @@ import yaml
 from sklearn.metrics import classification_report
 
 from autofm.data.features import prepare
-from autofm.data.labels import CLASS_NAMES, label_frame, load_alarms
+from autofm.data.labels import CLASS_NAMES, label_from_config
 from autofm.data.loader import load
 from autofm.metrics import compute_all, format_summary, write_prometheus
 from autofm.model.classifier import TemporalClassifier
@@ -178,8 +178,7 @@ def run(cfg: dict) -> dict:
 
     print(f"[2/5] Labeling from alarms (horizon={cfg['horizon']} ROPs) ...")
     with nvtx_stage("stage/2_label"):
-        alarms = load_alarms(str(Path(root) / "alarms" / "alarms.csv"))
-        labeled = label_frame(d.frame, alarms, horizon=cfg["horizon"])
+        labeled = label_from_config(d.frame, cfg)
     print(f"      positive rate {labeled['will_fault'].mean():.3f}")
 
     # Authoritative cell -> gNB topology map from the loader's fdn parse. Used
